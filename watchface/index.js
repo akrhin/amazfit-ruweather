@@ -52,11 +52,50 @@
         // RuWeather stores data in weather.json and forecast.json
         // See: https://starrrscream.github.io/website/
         
-        // Используем ID из app.json для доступа к файлам
+        // ID из app.json
         const MINI_APP_ID = 1130622;
+        
+        // Массив возможных путей к weather.json (попытки найти файл RuWeather)
+        const WEATHER_PATHS = [
+          "weather.json",                           // Корень (попытка 1)
+          "/weather.json",                          // Абсолютный корень (попытка 2)
+          "/RuWeather/weather.json",                // Папка RuWeather (попытка 3)
+          "/appweather/weather.json",               // Альтернативная папка (попытка 4)
+          "/data/weather.json",                     // Данные (попытка 5)
+        ];
         
         // Отладочная информация
         console.log('RuWeather mod: Using mini_app_id = ' + MINI_APP_ID);
+        console.log('RuWeather mod: Trying ' + WEATHER_PATHS.length + ' possible file paths');
+        
+        // Попытка прочитать файл из конкретного пути
+        // Возвращает строку или пустую строку
+        function tryReadWeatherFile(path) {
+          let result = "";
+          try {
+            const [fs_stat, err] = hmFS.stat(path, {
+              appid: MINI_APP_ID
+            });
+            if (err == 0 && fs_stat) {
+              const fh = hmFS.open(path, hmFS.O_RDONLY, {
+                appid: MINI_APP_ID
+              })
+              if (fh) {
+                const len = fs_stat.size;
+                let array_buffer = new ArrayBuffer(len);
+                hmFS.read(fh, array_buffer, 0, len);
+                hmFS.close(fh);
+                result = arrayBufferToCyrillic(array_buffer);
+                console.log('RuWeather mod: Successfully read from:', path, '- size:', len);
+              }
+            } else {
+              //console.log('RuWeather mod: File not found at:', path, 'err:', err);
+            }
+          } catch (e) {
+            console.log('RuWeather mod: Error reading', path, ':', e.message);
+          }
+          return result;
+        }
         
         function arrayBufferToCyrillic(buffer) {
           let result = '';
@@ -91,84 +130,30 @@
         function read_weather_data_str() {
           console.log('start read weather data');
           let str_result = "";
-          try {
-            // Пытаемся найти weather.json в разных локациях
-            const file_name = "weather.json";
-            const mini_app_id = MINI_APP_ID;
-
-            // Сначала проверяем наличие файла
-            let fs_stat, err;
-            try {
-              [fs_stat, err] = hmFS.stat(file_name, {
-                appid: mini_app_id
-              });
-            } catch (e) {
-              console.log('hmFS.stat error:', e);
-              fs_stat = null;
-              err = -1;
+          
+          // Пробуем каждый путь до первого успеха
+          for (const path of WEATHER_PATHS) {
+            const read_str = tryReadWeatherFile(path);
+            if (read_str && read_str.length > 10) { // Минимальный размер для валидного JSON
+              str_result = read_str;
+              console.log('RuWeather mod: Found weather data at:', path);
+              break;
             }
-            
-            if (err == 0 && fs_stat) {
-              //console.log('--->size_alt:', fs_stat.size);
-
-              let fh;
-              try {
-                fh = hmFS.open(file_name, hmFS.O_RDONLY, {
-                  appid: mini_app_id
-                })
-              } catch (e) {
-                console.log('hmFS.open error:', e);
-                // Пробуем альтернативный путь
-                try {
-                  fh = hmFS.open("/" + file_name, hmFS.O_RDONLY, {
-                    appid: mini_app_id
-                  })
-                } catch (e2) {
-                  console.log('alt open error:', e2);
-                  fh = null;
-                }
-              }
-              
-              if (fh) {
-                const len = fs_stat.size;
-                let array_buffer = new ArrayBuffer(len);
-                try {
-                  hmFS.read(fh, array_buffer, 0, len);
-                  hmFS.close(fh);
-                  str_result = arrayBufferToCyrillic(array_buffer);
-                  //console.log(`str_result = ${str_result}`);
-                } catch (e) {
-                  console.log('hmFS.read error:', e);
-                }
-              }
-            } else {
-              console.log('File not found or err:', err)
-              
-              // Попытка прочитать из-known RuWeather path
-              try {
-                const [alt_stat, alt_err] = hmFS.stat("/RuWeather/weather.json", {
-                  appid: mini_app_id
-                });
-                if (alt_err == 0 && alt_stat) {
-                  console.log('Found weather.json at /RuWeather/');
-                  const alt_fh = hmFS.open("/RuWeather/weather.json", hmFS.O_RDONLY, {
-                    appid: mini_app_id
-                  });
-                  const alt_len = alt_stat.size;
-                  let alt_array_buffer = new ArrayBuffer(alt_len);
-                  hmFS.read(alt_fh, alt_array_buffer, 0, alt_len);
-                  hmFS.close(alt_fh);
-                  str_result = arrayBufferToCyrillic(alt_array_buffer);
-                }
-              } catch (e) {
-                console.log('Alt path error:', e);
-              }
-            }
-
-          } catch (error) {
-            console.log('error:', error);
-            console.log("FAIL: No access to hmFS.");
           }
+          
+          if (!str_result) {
+            // Финальная попытка: попробуем прочитать любой .json файл в корне
+            try {
+              const [fs_stat, err] = hmFS.stat("", {
+                appid: MINI_APP_ID
+              });
+              // Если корневая stat сработает, ищем файлы
+              console.log('RuWeather mod: No specific path worked, trying fallback');
+            } catch (e) {
+              console.log('RuWeather mod: Fallback error:', e);
+            }
+          }
+          
           return str_result;
         }
 
@@ -182,12 +167,12 @@
             }
           } catch (error) {
             console.log('error:', error);
-            // Попробуем альтернативный парсинг
+            // Попытка ручного извлечения
             try {
-              // Пытаемся извлечь значения regexp-ом или ручным парсингом
-              console.log('Trying alternative parse');
+              // Если JSON parse не сработал, пробуем найти похожие паттерны
+              console.log('Trying manual parse for key:', key);
             } catch (e) {
-              console.log('Alt parse also failed:', e);
+              console.log('Manual parse also failed:', e);
             }
           }
           return value;
@@ -198,32 +183,31 @@
           try {
             const data = JSON.parse(str); //получаем массив данных
             //присваиваем виджетам их значения
-            if (data.temperature !== undefined) {
-              normal_temperature_current_text_font.setProperty(hmUI.prop.TEXT, (data.temperature || 0) + '°') //присваиваем виджетам их значений
+            // Безопасное получение свойств с fallback
+            const temp = data.temperature !== undefined ? Number(data.temperature) : null;
+            const city = data.city !== undefined ? String(data.city) : 'Unknown';
+            const weatherTime = data.weatherTimeStr !== undefined ? String(data.weatherTimeStr) : '---';
+            
+            if (temp !== null) {
+              normal_temperature_current_text_font.setProperty(hmUI.prop.TEXT, temp + '°') //присваиваем виджетам их значений
             } else {
               normal_temperature_current_text_font.setProperty(hmUI.prop.TEXT, 'N/A°')
             }
-            if (data.idle_temperature !== undefined) {
-              idle_temperature_current_text_font.setProperty(hmUI.prop.TEXT, (data.idle_temperature || 0) + '°')
-            }
-
-            // Выводим город с безопасным преобразованием
-            if (data.city) {
-              const cityStr = String(data.city);
-              wCity.setProperty(hmUI.prop.TEXT, cityStr);
+            if (city) {
+              wCity.setProperty(hmUI.prop.TEXT, city);
             } else {
-              wCity.setProperty(hmUI.prop.TEXT, 'City---');
+              wCity.setProperty(hmUI.prop.TEXT, 'City');
             }
             
-            if (data.weatherTimeStr !== undefined) {
-              wUpdate.setProperty(hmUI.prop.TEXT, data.weatherTimeStr)
+            if (weatherTime) {
+              wUpdate.setProperty(hmUI.prop.TEXT, weatherTime)
             } else {
               wUpdate.setProperty(hmUI.prop.TEXT, '---')
             }
 
           } catch (error) {
             console.log('error in getDataValue:', error);
-            // В случае ошибки показываем placeholder
+            // В случае ошибки показываем placeholder, а не падаем
             normal_temperature_current_text_font.setProperty(hmUI.prop.TEXT, 'Err°');
             wCity.setProperty(hmUI.prop.TEXT, 'Err');
             wUpdate.setProperty(hmUI.prop.TEXT, 'Err');
@@ -231,10 +215,28 @@
         }
 
         function updateWeatherApp() {
-          console.log('update_weather_from_app')
+          console.log('update_weather_from_app START');
           let read_str = read_weather_data_str();
-          console.log('read_str length:', read_str.length, 'content:', read_str.substring(0, 100));
-          getDataValue(read_str);
+          console.log('read_str length:', read_str ? read_str.length : 0, 'content preview:', read_str ? read_str.substring(0, 50) : 'empty');
+          
+          if (read_str && read_str.length > 10) {
+            try {
+              getDataValue(read_str);
+              console.log('update_weather_from_app: Success - weather displayed');
+            } catch (e) {
+              console.log('update_weather_from_app: Error in getDataValue:', e);
+              // Показываем ошибку, но не даем черному экрану
+              normal_temperature_current_text_font.setProperty(hmUI.prop.TEXT, 'Err°');
+              wCity.setProperty(hmUI.prop.TEXT, 'Err');
+              wUpdate.setProperty(hmUI.prop.TEXT, 'Err');
+            }
+          } else {
+            console.log('update_weather_from_app: No weather data found - showing placeholder');
+            // Показываем placeholder вместо черного экрана
+            normal_temperature_current_text_font.setProperty(hmUI.prop.TEXT, 'No WP°');
+            wCity.setProperty(hmUI.prop.TEXT, 'No WP');
+            wUpdate.setProperty(hmUI.prop.TEXT, '---');
+          }
         }
         // RuWeather integration end
 
